@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-11-17
+
 ### Changed
 - The keepalive now runs `claude -p --model haiku` (override with
   `CLAUDE_SESSION_PING_MODEL`), so changing the default model can no longer
@@ -237,7 +239,8 @@ Initial release: a `launchd`-based keepalive ping, no LLM required to decide
   retries on a usage-limit/blocked response.
 - `install.sh`, MIT license, initial README.
 
-[Unreleased]: https://github.com/lambdamax/claude-session-ping/compare/v2.5.1...HEAD
+[Unreleased]: https://github.com/lambdamax/claude-session-ping/compare/v2.6.0...HEAD
+[2.6.0]: https://github.com/lambdamax/claude-session-ping/compare/v2.5.1...v2.6.0
 [2.5.1]: https://github.com/lambdamax/claude-session-ping/compare/v2.5.0...v2.5.1
 [2.5.0]: https://github.com/lambdamax/claude-session-ping/compare/v2.4.1...v2.5.0
 [2.4.1]: https://github.com/lambdamax/claude-session-ping/compare/v2.4.0...v2.4.1
