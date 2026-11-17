@@ -22,6 +22,15 @@ RETRY_DELAY_SECONDS="${CLAUDE_SESSION_PING_RETRY_DELAY:-300}"
 USAGE_RETRY_ATTEMPTS="${CLAUDE_SESSION_PING_USAGE_RETRY_ATTEMPTS:-3}"
 USAGE_RETRY_DELAY_SECONDS="${CLAUDE_SESSION_PING_USAGE_RETRY_DELAY:-15}"
 LIMIT_PATTERN='(usage limit|quota|blocked|rate limit|try again later)'
+# Replies a 5-minute retry can't fix: the 5-hour limit runs for hours, and a
+# model that needs usage credits stays refused. On 2026-11-16/17 the 17:02 run
+# retried both for ~16h (retry sleeps stall while the Mac sleeps), holding the
+# lock through the 22:02 and 07:02 targets. Stop retrying when one appears.
+HARD_LIMIT_PATTERN='(hit your [^ ]+ limit|requires usage credits)'
+# Pinned so a change to the default model in ~/.claude/settings.json can't
+# break the ping. The 2026-11-16/17 failures were the default model (Fable 5.2)
+# asking for usage credits. Any model opens the same session window.
+PING_MODEL="${CLAUDE_SESSION_PING_MODEL:-haiku}"
 USAGE_LINK='https://claude.ai/new#settings/usage'
 USAGE_CMD="${CLAUDE_SESSION_PING_USAGE_CMD:-python3 $(cd "$(dirname "$0")" && pwd)/claude_usage.py --shell}"
 LOG_FILE="${CLAUDE_SESSION_PING_LOG:-$(cd "$(dirname "$0")/.." && pwd)/logs/claude-session-ping.log}"
@@ -482,7 +491,7 @@ success_message() {
 }
 
 failure_message() {
-  local body="⚠️ Failed to open Claude session window at ${WINDOW_LABEL} after $((MAX_RETRIES + 1)) attempts. Check log."
+  local body="⚠️ Failed to open Claude session window at ${WINDOW_LABEL} after ${attempt} attempt(s). Check log."
   if [[ "${USAGE_OK:-0}" == "1" ]]; then
     body="${body} Current window runs until $(hhmm "$SESSION_RESETS_AT")."
     body="${body}$(weekly_suffix)"
@@ -504,7 +513,7 @@ send_ping() {
     output=$(eval "$CLAUDE_SESSION_PING_COMMAND" 2>&1)
     exit_status=$?
   elif command -v claude >/dev/null 2>&1; then
-    output=$(claude -p "$message" 2>&1)
+    output=$(claude -p --model "$PING_MODEL" "$message" 2>&1)
     exit_status=$?
   else
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] no Claude target configured" >>"$LOG_FILE"
@@ -513,6 +522,9 @@ send_ping() {
 
   echo "$output" >>"$LOG_FILE"
 
+  if echo "$output" | grep -qiE "$HARD_LIMIT_PATTERN"; then
+    return 2
+  fi
   if [[ $exit_status -ne 0 ]] || echo "$output" | grep -qiE "$LIMIT_PATTERN"; then
     return 1
   fi
@@ -524,7 +536,11 @@ while true; do
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] sending Claude keepalive at $CURRENT_TIME (attempt $attempt/$((MAX_RETRIES + 1)))" >>"$LOG_FILE"
   MESSAGE="keepalive ping $(date '+%Y-%m-%d %H:%M:%S')"
 
-  if send_ping "$MESSAGE"; then
+  # `|| ping_status=$?` keeps set -e from killing the run on a failed ping
+  # (it used to sit inside `if send_ping`, which suppresses set -e the same way).
+  ping_status=0
+  send_ping "$MESSAGE" || ping_status=$?
+  if [[ $ping_status -eq 0 ]]; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] sent successfully (attempt $attempt)" >>"$LOG_FILE"
     load_usage_settled
     if [[ "${USAGE_OK:-0}" == "1" ]]; then
@@ -548,6 +564,14 @@ while true; do
       clear_backup
     fi
     exit 0
+  fi
+
+  if [[ $ping_status -eq 2 ]]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] attempt $attempt hit a hard limit (usage limit or credits), not retrying" >>"$LOG_FILE"
+    write_state "failed"
+    load_usage
+    notify_telegram "$(failure_message)"
+    exit 1
   fi
 
   if [[ $attempt -gt $MAX_RETRIES ]]; then

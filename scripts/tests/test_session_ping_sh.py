@@ -728,3 +728,75 @@ class TestConcurrencyLock(PingScriptCase):
         self.assertEqual(code, 0)
         self.assertIn("breaking stale lock from dead pid", log)
         self.assertIn("sending Claude keepalive at 2231", log)
+
+
+class TestHardLimitStopsRetrying(PingScriptCase):
+    """A 5-hour-limit or usage-credits reply ends the run instead of retrying.
+
+    On 2026-11-16/17 the 17:02 run retried both for ~16h and held the lock
+    through the 22:02 and 07:02 targets.
+    """
+
+    def _run_with_reply(self, reply, exit_code=1):
+        return self.run_ping("12:02", extra_env={
+            "CLAUDE_SESSION_PING_COMMAND": "echo %r; exit %d" % (reply, exit_code),
+            "CLAUDE_SESSION_PING_RETRY_DELAY": "0",
+        })
+
+    def test_five_hour_limit_gives_up_after_one_attempt(self):
+        code, log = self._run_with_reply(
+            "You've hit your 5-hour limit · resets 6:40pm (America/Guayaquil)")
+        self.assertEqual(code, 1)
+        self.assertIn("hard limit", log)
+        self.assertNotIn("attempt 2/", log)
+        self.assertIn('"failed"', self.state_file.read_text())
+
+    def test_usage_credits_gives_up_after_one_attempt(self):
+        code, log = self._run_with_reply(
+            "Fable 5.2 requires usage credits. Switch to another model, or manage usage credits")
+        self.assertEqual(code, 1)
+        self.assertIn("hard limit", log)
+        self.assertNotIn("attempt 2/", log)
+
+    def test_hard_limit_text_with_zero_exit_still_stops(self):
+        code, log = self._run_with_reply("You've hit your weekly limit", exit_code=0)
+        self.assertEqual(code, 1)
+        self.assertNotIn("sent successfully", log)
+
+    def test_ordinary_failure_still_retries(self):
+        code, log = self.run_ping("12:02", extra_env={
+            "CLAUDE_SESSION_PING_COMMAND": "echo network error; exit 1",
+            "CLAUDE_SESSION_PING_RETRY_DELAY": "0",
+            "CLAUDE_SESSION_PING_MAX_RETRIES": "1",
+        })
+        self.assertEqual(code, 1)
+        self.assertIn("attempt 2/2", log)
+        self.assertNotIn("hard limit", log)
+
+
+class TestPingModelIsPinned(PingScriptCase):
+    """The real `claude` path passes --model, so the default model can't break it."""
+
+    def _fake_claude_env(self, extra=None):
+        bindir = Path(self.tmp.name) / "bin"
+        bindir.mkdir()
+        fake = bindir / "claude"
+        fake.write_text('#!/bin/sh\necho "argv: $*"\n')
+        fake.chmod(0o755)
+        env = {"PATH": "%s:%s" % (bindir, os.environ["PATH"])}
+        env.update(extra or {})
+        return env
+
+    def _run_real_path(self, extra=None):
+        env = self.build_env("12:02", extra_env=self._fake_claude_env(extra))
+        del env["CLAUDE_SESSION_PING_COMMAND"]
+        subprocess.run(["zsh", str(SCRIPT)], env=env, capture_output=True,
+                       text=True, timeout=30)
+        return self.log_file.read_text()
+
+    def test_defaults_to_haiku(self):
+        self.assertIn("argv: -p --model haiku keepalive ping", self._run_real_path())
+
+    def test_model_override(self):
+        log = self._run_real_path({"CLAUDE_SESSION_PING_MODEL": "sonnet"})
+        self.assertIn("argv: -p --model sonnet keepalive ping", log)

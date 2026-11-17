@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- The keepalive now runs `claude -p --model haiku` (override with
+  `CLAUDE_SESSION_PING_MODEL`), so changing the default model can no longer
+  break the ping, and each ping uses less quota.
+
+### Fixed
+- A "hit your 5-hour limit" or "requires usage credits" reply now ends the run
+  at once with a failure notice. These errors don't clear within the 5-minute
+  retries, which used to hold the lock across later scheduled targets.
+
 ## [2.5.1] - 2026-10-18
 
 ### Changed
